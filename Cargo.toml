@@ -1,0 +1,16 @@
+[package]
+name = "vapordb"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+    "core",
+    "server",
+    "cli"
+]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[dependencies]

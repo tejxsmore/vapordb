@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	width: 100%;
+	min-height: 100%;
+	color: #fffdf6;
+	background-color: #191825;
+	font-family: 'Excon', sans-serif;
+	letter-spacing: 0.5px;
+	box-sizing: border-box;
+	scrollbar-width: none; /* Firefox */
+	-ms-overflow-style: none; /* IE 10+ */
+}
+
+:root {
+	--dark: #191825;
+	--yellow: #f1d00a; /* Example hex */
+	--blue: #1b56fd; /* Example hex */
+}
+
+/* Hide scrollbars - WebKit */
+::-webkit-scrollbar {
+	width: 0px;
+	height: 0px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-thumb:hover {
+	background: transparent;
+}
+
+/* Inherit box-sizing for all elements */
+*,
+*::before,
+*::after {
+	box-sizing: inherit;
+}
