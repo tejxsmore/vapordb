@@ -1,25 +1,10 @@
 use std::sync::{Arc, Mutex};
 use warp::Filter;
 use core::db::VaporDB;
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize)]
-#[serde(tag = "cmd", rename_all = "lowercase")]
-enum ClientCommand {
-    Get { key: String },
-    Set { key: String, value: String },
-    Del { key: String },
-    SetWithExpiration { key: String, value: String, ttl_secs: u64 },
-}
-
-#[derive(Serialize)]
-struct Response {
-    result: Option<String>,
-    error: Option<String>,
-}
+use core::command::Command;
+use cli::utils::{ClientCommand, Response};
 
 pub fn start_server() {
-    // Start the server using tokio runtime
     tokio_main();
 }
 
@@ -48,19 +33,59 @@ async fn handle_command(
     let mut db = db.lock().unwrap();
 
     let result = match cmd {
-        ClientCommand::Get { key } => db.execute(core::command::Command::Get(key)).unwrap_or(None),
+        // === String ===
+        ClientCommand::Get { key } => db.execute(Command::Get(key.to_string())).unwrap_or(None),
         ClientCommand::Set { key, value } => {
-            db.execute(core::command::Command::Set(key, value)).ok();
+            db.execute(Command::Set(key.to_string(), value.to_string())).ok();
             None
         }
         ClientCommand::Del { key } => {
-            db.execute(core::command::Command::Del(key)).ok();
+            db.execute(Command::Del(key.to_string())).ok();
             None
         }
         ClientCommand::SetWithExpiration { key, value, ttl_secs } => {
-            db.set_with_expiration(key, value, ttl_secs).ok();
+            db.set_with_expiration(key.to_string(), value.to_string(), ttl_secs).ok();
             None
         }
+
+        // === Hash ===
+        ClientCommand::HSet { key, field, value } => {
+            db.execute(Command::HSet(key.to_string(), field.to_string(), value.to_string())).ok();
+            None
+        }
+        ClientCommand::HGet { key, field } => {
+            db.execute(Command::HGet(key.to_string(), field.to_string())).unwrap_or(None)
+        }
+        ClientCommand::HDel { key, field } => {
+            db.execute(Command::HDel(key.to_string(), field.to_string())).ok();
+            None
+        }
+
+        // === List ===
+        ClientCommand::LPush { key, value } => {
+            db.execute(Command::LPush(key.to_string(), value.to_string())).ok();
+            None
+        }
+        ClientCommand::RPush { key, value } => {
+            db.execute(Command::RPush(key.to_string(), value.to_string())).ok();
+            None
+        }
+        ClientCommand::LPop { key } => db.execute(Command::LPop(key.to_string())).unwrap_or(None),
+        ClientCommand::RPop { key } => db.execute(Command::RPop(key.to_string())).unwrap_or(None),
+        ClientCommand::LRange { key, start, end } => {
+            db.execute(Command::LRange(key.to_string(), start, end)).unwrap_or(None)
+        }
+
+        // === Set ===
+        ClientCommand::SAdd { key, value } => {
+            db.execute(Command::SAdd(key.to_string(), value.to_string())).ok();
+            None
+        }
+        ClientCommand::SRem { key, value } => {
+            db.execute(Command::SRem(key.to_string(), value.to_string())).ok();
+            None
+        }
+        ClientCommand::SMembers { key } => db.execute(Command::SMembers(key.to_string())).unwrap_or(None),
     };
 
     let resp = Response {

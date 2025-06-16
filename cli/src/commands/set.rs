@@ -1,20 +1,21 @@
 use crate::utils::{send_request, ClientCommand};
 
-pub fn handle_set(key: &str, value: &str) {
-    let cmd = ClientCommand::Set { key, value };
-    send_request(cmd);
+pub fn handle_sadd(key: &str, value: &str) {
+    send_request(ClientCommand::SAdd {
+        key: key.to_string(),
+        value: value.to_string(),
+    });
 }
 
-pub fn handle_del(key: &str) {
-    let cmd = ClientCommand::Del { key };
-    send_request(cmd);
+pub fn handle_srem(key: &str, value: &str) {
+    send_request(ClientCommand::SRem {
+        key: key.to_string(),
+        value: value.to_string(),
+    });
 }
 
-pub fn handle_set_expiring(key: &str, value: &str, ttl_secs: u64) {
-    let cmd = ClientCommand::SetWithExpiration {
-        key,
-        value,
-        ttl_secs,
-    };
-    send_request(cmd);
+pub fn handle_smembers(key: &str) {
+    send_request(ClientCommand::SMembers {
+        key: key.to_string(),
+    });
 }

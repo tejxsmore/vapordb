@@ -71,6 +71,10 @@ impl VaporDB {
         Arc::clone(&self.ttl)
     }
 
+    pub fn sstable(&self) -> Option<Arc<Mutex<SSTable>>> {
+        self.sstables.get(0).cloned().map(|sst| Arc::new(Mutex::new(sst)))
+    }
+
     pub fn start_ttl_daemon(db: Arc<Mutex<Self>>) {
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -367,7 +371,7 @@ impl VaporDB {
                             "Expected list, found set".into(),
                         ));
                     }
-                    None => Ok(None), // No such key
+                    None => Ok(Some("[]".to_string())), // No such key
                 }
             }
 
@@ -444,7 +448,7 @@ impl VaporDB {
 
     pub fn set_with_expiration(&mut self, key: String, value: String, ttl_secs: u64) -> Result<()> {
         self.execute(Command::Set(key.clone(), value))?;
-        self.ttl.set_expiration(key, Duration::from_secs(ttl_secs));
+        self.ttl.set(key, Duration::from_secs(ttl_secs));
         Ok(())
     }
 }

@@ -5,15 +5,19 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::RwLock;
+use std::sync::{Arc};
+use crate::ttl::ExpirationTable;
 
 pub struct MemTable {
     pub map: RwLock<HashMap<String, Value>>,
+    pub expiration_table: Option<Arc<ExpirationTable>>,
 }
 
 impl MemTable {
     pub fn new() -> Self {
         Self {
             map: RwLock::new(HashMap::new()),
+            expiration_table: Some(Arc::new(ExpirationTable::new())),
         }
     }
 
@@ -128,6 +132,11 @@ impl MemTable {
 
 impl Storage for MemTable {
     fn get(&self, key: &str) -> Result<Option<Value>> {
+        if let Some(expiration_table) = &self.expiration_table {
+            if expiration_table.is_expired(key) {
+                return Ok(None);
+            }
+        }
         Ok(self.map.read().unwrap().get(key).cloned())
     }
 

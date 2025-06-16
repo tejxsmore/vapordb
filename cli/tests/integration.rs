@@ -1,53 +1,98 @@
-use assert_cmd::Command;
+use core::db::VaporDB;
+use core::command::Command;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-#[test]
-fn test_vapordb_cli_commands() {
-    // Launch server in a thread
-    thread::spawn(|| {
-        let mut cmd = Command::cargo_bin("cli").unwrap();
-        cmd.arg("start").unwrap();
-    });
-
-    // Give the server a second to boot
-    std::thread::sleep(Duration::from_secs(1));
-
-    // Set a key
-    let mut set = Command::cargo_bin("cli").unwrap();
-    set.args(["set", "testkey", "value123"]).assert().success();
-
-    // Get the key
-    let mut get = Command::cargo_bin("cli").unwrap();
-    get.args(["get", "testkey"])
-        .assert()
-        .stdout(predicates::str::contains("value123"));
-
-    // Delete the key
-    let mut del = Command::cargo_bin("cli").unwrap();
-    del.args(["del", "testkey"]).assert().success();
-
-    // Get again: should be empty or silent
-    let mut get_again = Command::cargo_bin("cli").unwrap();
-    get_again.args(["get", "testkey"]).assert().stdout("");
+fn setup_db() -> Arc<Mutex<VaporDB>> {
+    let db = VaporDB::new_with_persistence("test.wal").unwrap();
+    Arc::new(Mutex::new(db))
 }
 
 #[test]
-fn test_expiration() {
-    // Set with expiration
-    let mut set = Command::cargo_bin("cli").unwrap();
-    set.args(["set-expiring", "temp", "abc", "--ttl", "2"])
-        .assert()
-        .success();
+fn test_string_set_get() {
+    let db = setup_db();
+    let mut db = db.lock().unwrap();
 
-    let mut get = Command::cargo_bin("cli").unwrap();
-    get.args(["get", "temp"])
-        .assert()
-        .stdout(predicates::str::contains("abc"));
+    db.execute(Command::Set("k".into(), "v".into())).unwrap();
+    let result = db.execute(Command::Get("k".into())).unwrap();
+    assert_eq!(result, Some("v".to_string()));
+}
 
-    // Sleep and check again
-    std::thread::sleep(Duration::from_secs(3));
+#[test]
+fn test_list_push_pop() {
+    let db = setup_db();
+    let mut db = db.lock().unwrap();
 
-    let mut get_after = Command::cargo_bin("cli").unwrap();
-    get_after.args(["get", "temp"]).assert().stdout("");
+    db.execute(Command::LPush("mylist".into(), "a".into())).unwrap();
+    db.execute(Command::RPush("mylist".into(), "b".into())).unwrap();
+    db.execute(Command::LPush("mylist".into(), "c".into())).unwrap();
+
+    let val = db.execute(Command::LPop("mylist".into())).unwrap();
+    assert_eq!(val, Some("c".into()));
+
+    let val = db.execute(Command::RPop("mylist".into())).unwrap();
+    assert_eq!(val, Some("b".into()));
+
+    let val = db.execute(Command::LPop("mylist".into())).unwrap();
+    assert_eq!(val, Some("a".into()));
+
+    let val = db.execute(Command::LPop("mylist".into())).unwrap();
+    assert_eq!(val, None);
+}
+
+#[test]
+fn test_set_operations() {
+    let db = setup_db();
+    let mut db = db.lock().unwrap();
+
+    db.execute(Command::SAdd("myset".into(), "x".into())).unwrap();
+    db.execute(Command::SAdd("myset".into(), "x".into())).unwrap(); // duplicate
+    db.execute(Command::SAdd("myset".into(), "y".into())).unwrap();
+
+    let members = db.execute(Command::SMembers("myset".into())).unwrap();
+    let parsed: Vec<String> = serde_json::from_str(&members.unwrap()).unwrap();
+    assert_eq!(parsed.len(), 2);
+    assert!(parsed.contains(&"x".to_string()));
+    assert!(parsed.contains(&"y".to_string()));
+
+    db.execute(Command::SRem("myset".into(), "x".into())).unwrap();
+    let members = db.execute(Command::SMembers("myset".into())).unwrap();
+    let parsed: Vec<String> = serde_json::from_str(&members.unwrap()).unwrap();
+    assert_eq!(parsed, vec!["y"]);
+}
+
+#[test]
+fn test_hash_hset_hget_hdel() {
+    let db = setup_db();
+    let mut db = db.lock().unwrap();
+
+    db.execute(Command::HSet("myhash".into(), "f1".into(), "v1".into())).unwrap();
+    db.execute(Command::HSet("myhash".into(), "f2".into(), "v2".into())).unwrap();
+
+    let v1 = db.execute(Command::HGet("myhash".into(), "f1".into())).unwrap();
+    assert_eq!(v1, Some("v1".into()));
+
+    db.execute(Command::HDel("myhash".into(), "f1".into())).unwrap();
+    let v1 = db.execute(Command::HGet("myhash".into(), "f1".into())).unwrap();
+    assert_eq!(v1, None);
+}
+
+#[test]
+fn test_ttl_expiration() {
+    let db = setup_db();
+    let db_arc = Arc::clone(&db);
+    VaporDB::start_ttl_daemon(Arc::clone(&db_arc));
+
+    {
+        let mut db = db.lock().unwrap();
+        db.set_with_expiration("temp".into(), "bye".into(), 1).unwrap();
+        assert_eq!(db.execute(Command::Get("temp".into())).unwrap(), Some("bye".into()));
+    }
+
+    thread::sleep(Duration::from_secs(2));
+
+    let mut db = db.lock().unwrap();
+    let val = db.execute(Command::Get("temp".into())).unwrap();
+    assert_eq!(val, None);
 }

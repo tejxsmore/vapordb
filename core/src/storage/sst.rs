@@ -4,35 +4,61 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct SSTableEntry {
     key: String,
-    value: Option<Value>, // None represents a tombstone (deleted key)
+    value: Option<Value>, // None = tombstone
+    ttl: Option<u64>,     // Epoch seconds
 }
 
+#[derive(Clone)]
 pub struct SSTable {
-    map: HashMap<String, Option<Value>>, // Option<Value> enables deletions (tombstones)
+    pub map: HashMap<String, Option<Value>>,
+    pub ttl_map: HashMap<String, u64>,
 }
 
 impl SSTable {
-    /// Load SSTable from file
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
     pub fn load(path: &str) -> Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut map = HashMap::new();
+        let mut ttl_map = HashMap::new();
 
         for line in reader.lines() {
             let line = line?;
-            let entry: SSTableEntry = serde_json::from_str(&line)?;
+            let entry: SSTableEntry = match serde_json::from_str(&line) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("Skipping malformed line: {e}");
+                    continue;
+                }
+            };
+
+            // Check TTL before inserting
+            if let Some(ttl) = entry.ttl {
+                if Self::current_timestamp() >= ttl {
+                    // Skip expired entry entirely
+                    continue;
+                }
+                ttl_map.insert(entry.key.clone(), ttl);
+            }
+
             map.insert(entry.key, entry.value);
         }
 
-        Ok(Self { map })
+        Ok(Self { map, ttl_map })
     }
 
-    /// Write SSTable to file
-    pub fn write(path: &str, map: &HashMap<String, Option<Value>>) -> Result<()> {
+    pub fn write(path: &str, map: &HashMap<String, Option<Value>>, ttl_map: &HashMap<String, u64>) -> Result<()> {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -41,90 +67,79 @@ impl SSTable {
         let mut writer = BufWriter::new(file);
 
         for (key, value) in map {
+            if let Some(ttl) = ttl_map.get(key) {
+                if Self::current_timestamp() >= *ttl {
+                    continue; // Skip expired
+                }
+            }
+
             let entry = SSTableEntry {
                 key: key.clone(),
                 value: value.clone(),
+                ttl: ttl_map.get(key).cloned(),
             };
-            let json_line = serde_json::to_string(&entry)?;
-            writeln!(writer, "{}", json_line)?;
+            writeln!(writer, "{}", serde_json::to_string(&entry)?)?;
         }
 
         Ok(())
     }
 
-    /// Get value by key
     pub fn get(&self, key: &str) -> Option<Value> {
-        match self.map.get(key)? {
-            Some(v) => Some(v.clone()),
-            None => None, // Tombstone or deleted
+        if let Some(ttl) = self.ttl_map.get(key) {
+            if Self::current_timestamp() >= *ttl {
+                return None;
+            }
+        }
+
+        self.map.get(key).cloned().flatten()
+    }
+
+    pub fn insert(&mut self, key: String, value: Value, ttl: Option<u64>) {
+        self.map.insert(key.clone(), Some(value));
+        if let Some(t) = ttl {
+            self.ttl_map.insert(key, t);
+        } else {
+            self.ttl_map.remove(&key);
         }
     }
 
-    /// Check if key exists (including tombstone)
-    pub fn exists(&self, key: &str) -> bool {
-        self.map.contains_key(key)
-    }
-
-    /// Insert or update a key-value pair
-    pub fn insert(&mut self, key: String, value: Value) {
-        self.map.insert(key, Some(value));
-    }
-
-    /// Mark a key as deleted (tombstone)
     pub fn delete(&mut self, key: &str) {
         self.map.insert(key.to_string(), None);
+        self.ttl_map.remove(key);
     }
 
-    /// Get the number of entries in the SSTable
     pub fn size(&self) -> usize {
         self.map.len()
     }
 
-    /// Merge multiple SSTables into one (used for compaction)
+    pub fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            ttl_map: HashMap::new(),
+        }
+    }
+
     pub fn merge(ssts: &[SSTable]) -> SSTable {
-        let mut combined = HashMap::new();
+        let mut combined_map = HashMap::new();
+        let mut combined_ttl = HashMap::new();
 
         for sst in ssts {
             for (key, value) in &sst.map {
-                // If the key already exists and the value is not a tombstone (None), overwrite it
-                // If it's a tombstone (None), ensure the key is marked as deleted
-                if let Some(existing_value) = combined.get_mut(key) {
-                    if value.is_some() {
-                        // If the new value is not a tombstone, we update it
-                        *existing_value = value.clone();
-                    }
-                } else {
-                    // Insert the key-value pair if it doesn't exist yet
-                    combined.insert(key.clone(), value.clone());
-                }
+                combined_map.insert(key.clone(), value.clone());
+            }
+            for (key, ttl) in &sst.ttl_map {
+                combined_ttl.insert(key.clone(), *ttl);
             }
         }
 
-        SSTable { map: combined }
+        SSTable {
+            map: combined_map,
+            ttl_map: combined_ttl,
+        }
     }
 
     pub fn compact(sst1: &SSTable, sst2: &SSTable, output_path: &str) -> Result<()> {
-        let mut merged_map: HashMap<String, Option<Value>> = HashMap::new(); // Use Option<Value> to handle deletions
-
-        // Merge the two SSTables
-        for (key, value) in &sst1.map {
-            merged_map.insert(key.clone(), value.clone());
-        }
-
-        for (key, value) in &sst2.map {
-            merged_map.insert(key.clone(), value.clone());
-        }
-
-        // Write the merged SSTable to disk
-        let file = File::create(output_path)?;
-        let mut writer = BufWriter::new(file);
-
-        for (key, value) in merged_map {
-            let entry = SSTableEntry { key, value };
-            let json_line = serde_json::to_string(&entry)?;
-            writeln!(writer, "{}", json_line)?;
-        }
-
-        Ok(())
+        let merged = SSTable::merge(&[sst1.clone(), sst2.clone()]);
+        SSTable::write(output_path, &merged.map, &merged.ttl_map)
     }
 }

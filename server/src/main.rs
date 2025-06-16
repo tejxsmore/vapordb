@@ -36,10 +36,12 @@ async fn main() {
     let db_locked = db.lock().unwrap();
     let memtable = db_locked.memtable();             
     let expirations = db_locked.expiration_table();
+    let sstable = db_locked.sstable();
+
     drop(db_locked);
 
     // Spawn the TTL background task
-    start_ttl_daemon(expirations, memtable, Duration::from_secs(2), true);
+    start_ttl_daemon(expirations, memtable, sstable, Duration::from_millis(100), false);
 
     let db_filter = warp::any().map(move || db.clone());
 
